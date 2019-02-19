@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/dougEfresh/gtoggl-api/gthttp"
-	"github.com/dougEfresh/gtoggl-api/gttimentry"
+	gttimeentry "github.com/dougEfresh/gtoggl-api/gttimentry"
 	pixela "github.com/gainings/pixela-go-client"
 )
 
@@ -24,14 +24,19 @@ func Handler(ctx context.Context) error {
 	graph := os.Getenv("PIXELA_GRAPH")
 
 	// extract data from toggl
-	date, quantity := getDateAndTimeFromToggl(apiToken, pjID)
-	if date == "-1" || quantity == "-1" {
+	date, targetQuantity, wastingQuantity := getDateAndTimeFromToggl(apiToken, pjID)
+	if date == "-1" || targetQuantity == "-1" {
 		return errors.New("Error in accessing toggl")
 	}
-	fmt.Printf("date: %s, quantity: %s\n", date, quantity)
+	fmt.Printf("date: %s, target quantity: %s\n", date, targetQuantity)
+	fmt.Printf("date: %s, wasting quantity: %s\n", date, wastingQuantity)
 
 	// record pixel
-	perr := recordPixel(user, token, graph, date, quantity)
+	perr := recordPixel(user, token, graph, date, targetQuantity)
+	if perr != nil {
+		return errors.New("Error in accessing pixela")
+	}
+	perr = recordPixel(user, token, graph, date, wastingQuantity)
 	if perr != nil {
 		return errors.New("Error in accessing pixela")
 	}
@@ -39,12 +44,12 @@ func Handler(ctx context.Context) error {
 	return nil
 }
 
-func getDateAndTimeFromToggl(apiToken string, pjID uint64) (string, string) {
+func getDateAndTimeFromToggl(apiToken string, pjID uint64) (string, string, string) {
 	// create toggl client
 	thc, err := gthttp.NewClient(apiToken)
 	if err != nil {
 		fmt.Println(err)
-		return "-1", "-1"
+		return "-1", "-1", "-1"
 	}
 
 	// set time range to be analyzed
@@ -54,24 +59,30 @@ func getDateAndTimeFromToggl(apiToken string, pjID uint64) (string, string) {
 	date := y.Format("20060102")
 
 	// get time entries
-	total := int64(0)
+	targetTotal := int64(0)
+	wastingTotal := int64(0)
 	tec := gttimeentry.NewClient(thc)
 	entries, eerr := tec.GetRange(s, e)
 	if eerr != nil {
 		fmt.Println(eerr)
-		return "-1", "-1"
+		return "-1", "-1", "-1"
 	}
 
 	// sum durations with project pjID
 	for _, e := range entries {
+		fmt.Println(e.Pid, e.Tags, e.Description)
 		if e.Pid == pjID {
-			total += e.Duration
+			targetTotal += e.Duration
+		} else if e.Pid == 0 {
+			wastingTotal += e.Duration
 		}
 	}
-	totalMin := float64(total) / 60
-	quantity := strconv.FormatFloat(totalMin, 'f', 4, 64)
+	targetTotalMin := float64(targetTotal) / 60
+	wastingTotalMin := float64(wastingTotal) / 60
+	targetQuantity := strconv.FormatFloat(targetTotalMin, 'f', 4, 64)
+	wastingQuantity := strconv.FormatFloat(wastingTotalMin, 'f', 4, 64)
 
-	return date, quantity
+	return date, targetQuantity, wastingQuantity
 }
 
 func recordPixel(user, token, graph, date, quantity string) error {
